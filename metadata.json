@@ -1,0 +1,8 @@
+{
+  "name": "Bbgotchi",
+  "description": "A personalized Tamagotchi-style game for couples to raise 'kids', play mini-games, and solve relationship trivia to celebrate their love.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
