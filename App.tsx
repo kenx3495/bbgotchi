@@ -1,11 +1,18 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { PetState, GameState, PetStage, PetType, ShopItem, JournalEntry, Trophy } from './types';
-import { INITIAL_GAME_STATE, SHOP_ITEMS, PET_EMOJIS, EXP_PER_LEVEL, MAX_LEVEL, EVOLUTION_TROPHIES, TRIVIA_QUESTIONS, TRIVIA_REWARD, MEMORY_MATCH_CONFIG, MEMORY_MATCH_ENTRY_COST, MEMORY_MATCH_CONTINUE_COST, MEMORY_MATCH_MAX_CONTINUES } from './constants';
+import { PetState, GameState, PetStage, PetType, ShopItem, JournalEntry, Trophy, MemoryEntry, TerrariumItem, PlacedItem, ClaimedGift } from './types';
+import { BondGift } from './constants';
+import { INITIAL_GAME_STATE, SHOP_ITEMS, PET_EMOJIS, EXP_PER_LEVEL, MAX_LEVEL, EVOLUTION_TROPHIES, TRIVIA_QUESTIONS, TRIVIA_REWARD, MEMORY_MATCH_CONFIG, MEMORY_MATCH_ENTRY_COST, MEMORY_MATCH_CONTINUE_COST, MEMORY_MATCH_MAX_CONTINUES, TERRARIUM_ITEMS, FEATURE_UNLOCKS, getBondLevel, getNextBondThreshold, BOND_GAINS, BOND_GIFTS, NEGATIVE_STATE_CONFIG, NEGATIVE_STATE_MESSAGES, DEFAULT_NEGATIVE_STATES } from './constants';
 import { PetView } from './components/PetView';
 import { StatusBar } from './components/StatusBar';
 import { Modal } from './components/Modals';
 import { HomeScreen } from './components/HomeScreen';
+import { GameRoom } from './components/GameRoom';
+import { MemoryForm } from './components/MemoryForm';
+import { Terrarium } from './components/Terrarium';
+import { UnlockModal } from './components/UnlockModal';
+import { Gallery } from './components/Gallery';
+import { Collectibles } from './components/Collectibles';
 import { saveState } from './services/saveState';
 
 const App: React.FC = () => {
@@ -14,9 +21,15 @@ const App: React.FC = () => {
   const [game, setGame] = useState<GameState>(INITIAL_GAME_STATE);
   const [isPetting, setIsPetting] = useState(false);
   const [isEating, setIsEating] = useState(false);
-  const [activeModal, setActiveModal] = useState<'shop' | 'journal' | 'journal_entry' | 'settings' | 'kids' | 'trophies' | 'evolution' | 'games' | 'trivia' | 'memory_match' | null>(null);
+  const [activeModal, setActiveModal] = useState<'shop' | 'journal' | 'journal_entry' | 'settings' | 'kids' | 'trophies' | 'evolution' | 'games' | 'trivia' | 'memory_match' | 'game_room' | 'terrarium' | 'memory_form' | 'gallery' | 'collectibles' | null>(null);
   const [petMsg, setPetMsg] = useState("Hi Mom and Dad! ❤️");
   const [newMemory, setNewMemory] = useState("");
+
+  // Terrarium unlock state
+  const [pendingUnlocks, setPendingUnlocks] = useState<TerrariumItem[]>([]);
+
+  // Bond gift state
+  const [pendingGift, setPendingGift] = useState<{ gift: BondGift; pet: PetState } | null>(null);
 
   const [activeJournalTab, setActiveJournalTab] = useState<'entries' | 'our_story'>('entries');
   const [currentPrompt, setCurrentPrompt] = useState("");
@@ -43,6 +56,100 @@ const App: React.FC = () => {
   const [memoryContinuesUsed, setMemoryContinuesUsed] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Track when we last logged neglect to avoid spam (one per pet per session)
+  const [neglectLoggedFor, setNeglectLoggedFor] = useState<Set<string>>(new Set());
+
+  // Helper to create automatic journal entries
+  const createAutoJournalEntry = useCallback((
+    petState: PetState,
+    milestoneType: 'neglect' | 'feed' | 'play' | 'pet' | 'game_win' | 'level',
+    customNote?: string
+  ) => {
+    const prompts: Record<string, string[]> = {
+      neglect: [
+        `${petState.name} felt a bit lonely today...`,
+        `${petState.name} was wondering where you were...`,
+        `${petState.name} missed some quality time today.`,
+      ],
+      feed: [
+        `${petState.name} enjoyed a yummy meal!`,
+        `Feeding time with ${petState.name}!`,
+        `${petState.name}'s tummy is happy now!`,
+      ],
+      play: [
+        `Playtime fun with ${petState.name}!`,
+        `${petState.name} had a blast playing!`,
+        `${petState.name} loved the toy time!`,
+      ],
+      pet: [
+        `${petState.name} got some love and cuddles!`,
+        `Quality bonding time with ${petState.name}!`,
+        `${petState.name} felt so loved today!`,
+      ],
+      game_win: [
+        `${petState.name} won a game together!`,
+        `Victory with ${petState.name}!`,
+        `${petState.name} is a gaming champion!`,
+      ],
+      level: [
+        `${petState.name} leveled up to ${petState.level + 1}!`,
+        `${petState.name} is getting stronger!`,
+        `${petState.name} reached a new milestone!`,
+      ],
+    };
+
+    const notes: Record<string, string[]> = {
+      neglect: [
+        `Hunger: ${Math.round(petState.hunger)}%, Happiness: ${Math.round(petState.happiness)}%`,
+        `Stats were running low. Remember to check in!`,
+        `A gentle reminder to spend time together.`,
+      ],
+      feed: [
+        `Fed and feeling great! +25 hunger restored.`,
+        `A well-fed kid is a happy kid!`,
+        `Nom nom nom! Delicious!`,
+      ],
+      play: [
+        `Played with toys! +30 happiness, +10 EXP!`,
+        `Fun times equal happy memories!`,
+        `Energy well spent on play!`,
+      ],
+      pet: [
+        `Gentle pets and cuddles! +10 happiness.`,
+        `Nothing beats a good snuggle session.`,
+        `Love shared is love multiplied!`,
+      ],
+      game_win: [
+        customNote || `Won a game in the Game Room!`,
+        `Teamwork makes the dream work!`,
+        `Another win in the books!`,
+      ],
+      level: [
+        `Reached level ${petState.level + 1}! Keep growing!`,
+        `Experience gained through love and care.`,
+        `One step closer to greatness!`,
+      ],
+    };
+
+    const promptList = prompts[milestoneType] || prompts.pet;
+    const noteList = notes[milestoneType] || notes.pet;
+
+    const newEntry: JournalEntry = {
+      id: `auto-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: Date.now(),
+      levelAtEntry: petState.level,
+      prompt: promptList[Math.floor(Math.random() * promptList.length)],
+      note: customNote || noteList[Math.floor(Math.random() * noteList.length)],
+      milestoneType,
+      petId: petState.id,
+    };
+
+    setGame(prev => ({
+      ...prev,
+      journal: [newEntry, ...prev.journal]
+    }));
+  }, []);
 
   // Home screen handlers
   const handleNewGame = (slotId: number) => {
@@ -81,20 +188,165 @@ const App: React.FC = () => {
     }));
   };
 
-  // Tick logic: Deplete stats over time for all pets
+  const handleBondIncrease = (petId: string, amount: number) => {
+    setGame(prev => ({
+      ...prev,
+      pets: prev.pets.map(p =>
+        p.id === petId ? { ...p, bond: Math.min(100, p.bond + amount) } : p
+      )
+    }));
+  };
+
+  // Tick logic: Deplete stats over time for all pets (with negative state effects)
   useEffect(() => {
     const timer = setInterval(() => {
       setGame(prev => ({
         ...prev,
-        pets: prev.pets.map(p => ({
-          ...p,
-          hunger: Math.max(0, p.hunger - 0.1),
-          happiness: Math.max(0, p.happiness - 0.15),
-          energy: Math.max(0, p.energy - 0.05)
-        }))
+        pets: prev.pets.map(p => {
+          const states = p.negativeStates || DEFAULT_NEGATIVE_STATES;
+
+          // Calculate decay multiplier (doubled if sick)
+          const decayMult = states.sick?.active ? NEGATIVE_STATE_CONFIG.sick.decayMultiplier : 1;
+
+          // Calculate poop happiness penalty
+          const poopPenalty = states.poop?.active
+            ? (states.poop.count || 1) * NEGATIVE_STATE_CONFIG.poop.happinessPenaltyPerTick
+            : 0;
+
+          // Calculate energy with tired recovery boost (0.021/tick base decay for 30/day)
+          const energyBoost = states.tired?.active ? NEGATIVE_STATE_CONFIG.tired.energyRecoveryBoost : 0;
+          const newEnergy = Math.max(0, Math.min(100, p.energy - (0.021 * decayMult) + energyBoost));
+
+          // Check tired state trigger/recovery
+          let newTiredState = states.tired || { active: false, startedAt: null };
+          if (newEnergy < NEGATIVE_STATE_CONFIG.tired.energyThreshold && !states.tired?.active) {
+            newTiredState = { active: true, startedAt: Date.now() };
+          } else if (newEnergy >= NEGATIVE_STATE_CONFIG.tired.recoveryThreshold && states.tired?.active) {
+            newTiredState = { active: false, startedAt: null };
+          }
+
+          // Daily goal-based decay rates (for 60s tick interval):
+          // Hunger: 75/day (3 feeds × 25) = 0.052/tick
+          // Happiness: 80/day (8 pets × 10) = 0.056/tick
+          // Energy: 30/day (recovered by feeding) = 0.021/tick
+          return {
+            ...p,
+            hunger: Math.max(0, p.hunger - (0.052 * decayMult)),
+            happiness: Math.max(0, p.happiness - (0.056 * decayMult) - poopPenalty),
+            energy: newEnergy,
+            negativeStates: {
+              ...states,
+              tired: newTiredState,
+            },
+          };
+        })
       }));
-    }, 10000);
+    }, 60000); // 60-second tick for daily goal-based decay (1440 ticks/day)
     return () => clearInterval(timer);
+  }, []);
+
+  // Neglect detection - log when a pet's stats drop too low
+  useEffect(() => {
+    const NEGLECT_THRESHOLD = 20;
+
+    game.pets.forEach(p => {
+      const isNeglected = p.hunger < NEGLECT_THRESHOLD || p.happiness < NEGLECT_THRESHOLD;
+      const alreadyLogged = neglectLoggedFor.has(p.id);
+
+      if (isNeglected && !alreadyLogged) {
+        createAutoJournalEntry(p, 'neglect');
+        setNeglectLoggedFor(prev => new Set([...prev, p.id]));
+        if (p.id === game.activePetId) {
+          setPetMsg(`I'm feeling a bit neglected... 😢`);
+        }
+      }
+
+      // Reset neglect flag when stats recover above 50%
+      if (!isNeglected && p.hunger > 50 && p.happiness > 50 && alreadyLogged) {
+        setNeglectLoggedFor(prev => {
+          const next = new Set(prev);
+          next.delete(p.id);
+          return next;
+        });
+      }
+    });
+  }, [game.pets, game.activePetId, neglectLoggedFor, createAutoJournalEntry]);
+
+  // Sick state detection and recovery
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setGame(prev => ({
+        ...prev,
+        pets: prev.pets.map(p => {
+          const states = p.negativeStates || DEFAULT_NEGATIVE_STATES;
+          const isLowStats = p.hunger < NEGATIVE_STATE_CONFIG.sick.statThreshold ||
+                             p.happiness < NEGATIVE_STATE_CONFIG.sick.statThreshold;
+
+          // If already sick and medicine given, check for recovery
+          if (states.sick?.active && states.sick?.medicineGivenAt) {
+            const timeSinceMedicine = (Date.now() - states.sick.medicineGivenAt) / 1000;
+            if (timeSinceMedicine >= NEGATIVE_STATE_CONFIG.sick.recoveryTime) {
+              // Recovered!
+              if (p.id === prev.activePetId) {
+                const msgs = NEGATIVE_STATE_MESSAGES.sick.recovered;
+                setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+              }
+              return {
+                ...p,
+                negativeStates: {
+                  ...states,
+                  sick: { active: false, startedAt: null, medicineGivenAt: null, lowStatDuration: 0 },
+                },
+              };
+            }
+            return p; // Still recovering, no changes
+          }
+
+          // If not sick, track low stat duration
+          if (!states.sick?.active) {
+            if (isLowStats) {
+              const newDuration = (states.sick?.lowStatDuration || 0) + 1;
+              if (newDuration >= NEGATIVE_STATE_CONFIG.sick.durationToTrigger) {
+                // Trigger sickness!
+                if (p.id === prev.activePetId) {
+                  const msgs = NEGATIVE_STATE_MESSAGES.sick.trigger;
+                  setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+                }
+                return {
+                  ...p,
+                  negativeStates: {
+                    ...states,
+                    sick: { active: true, startedAt: Date.now(), medicineGivenAt: null, lowStatDuration: 0 },
+                  },
+                };
+              } else {
+                // Just increment duration
+                return {
+                  ...p,
+                  negativeStates: {
+                    ...states,
+                    sick: { ...states.sick, lowStatDuration: newDuration },
+                  },
+                };
+              }
+            } else if ((states.sick?.lowStatDuration || 0) > 0) {
+              // Reset duration if stats are okay
+              return {
+                ...p,
+                negativeStates: {
+                  ...states,
+                  sick: { ...states.sick, lowStatDuration: 0 },
+                },
+              };
+            }
+          }
+
+          return p;
+        })
+      }));
+    }, 1000); // Check every second
+
+    return () => clearInterval(interval);
   }, []);
 
   // Level Up Logic
@@ -128,6 +380,26 @@ const App: React.FC = () => {
         stage: nextStage
       }));
 
+      // Log level-up to journal
+      const levelUpEntry: JournalEntry = {
+        id: `level-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: Date.now(),
+        levelAtEntry: nextLevel,
+        prompt: evolving
+          ? `${pet.name} evolved into a ${nextStage}! 🎊`
+          : `${pet.name} reached level ${nextLevel}! 🌟`,
+        note: evolving
+          ? `A major milestone! ${pet.name} has grown from ${pet.stage} to ${nextStage}. So proud!`
+          : `Through love and care, ${pet.name} gained enough experience to reach level ${nextLevel}!`,
+        milestoneType: evolving ? 'evolution' : 'level',
+        petId: pet.id,
+      };
+
+      setGame(prev => ({
+        ...prev,
+        journal: [levelUpEntry, ...prev.journal]
+      }));
+
       // Award trophy on evolution
       if (evolving) {
         const trophyType = nextLevel === 5 ? 'teenager' : 'adult';
@@ -155,7 +427,7 @@ const App: React.FC = () => {
         setPetMsg(`Yay! I leveled up to level ${nextLevel}! 🌟`);
       }
     }
-  }, [pet.exp, pet.maxExp, pet.level]);
+  }, [pet.exp, pet.maxExp, pet.level, pet.id, pet.name, pet.stage]);
 
   const triggerJournalEntry = (milestone: string) => {
     setCurrentPrompt(`${pet.name} just ${milestone}! What would you like to remember about this moment?`);
@@ -188,37 +460,352 @@ const App: React.FC = () => {
   };
 
   const handleAction = useCallback((type: 'feed' | 'pet' | 'play') => {
+    const states = pet.negativeStates || DEFAULT_NEGATIVE_STATES;
+
     switch (type) {
       case 'feed':
         if (game.inventory.food > 0) {
+          // Check if overfeeding (hunger > threshold)
+          const willTriggerPoop = pet.hunger > NEGATIVE_STATE_CONFIG.poop.hungerThreshold;
+
           setIsEating(true);
           setTimeout(() => setIsEating(false), 2000);
-          updateActivePet(prev => ({ ...prev, hunger: Math.min(100, prev.hunger + 25), exp: prev.exp + 5 }));
+
+          updateActivePet(prev => {
+            const prevStates = prev.negativeStates || DEFAULT_NEGATIVE_STATES;
+            let newState: PetState = {
+              ...prev,
+              hunger: Math.min(100, prev.hunger + 25),
+              energy: Math.min(100, prev.energy + 10), // Feeding restores energy
+              exp: prev.exp + 5,
+            };
+
+            if (willTriggerPoop) {
+              const newPoopCount = Math.min(
+                (prevStates.poop?.count || 0) + 1,
+                NEGATIVE_STATE_CONFIG.poop.maxPoopCount
+              );
+              newState = {
+                ...newState,
+                negativeStates: {
+                  ...prevStates,
+                  poop: {
+                    active: true,
+                    count: newPoopCount,
+                    lastTriggeredAt: Date.now(),
+                  },
+                },
+              };
+            }
+            return newState;
+          });
+
+          if (willTriggerPoop) {
+            const msgs = NEGATIVE_STATE_MESSAGES.poop.trigger;
+            setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+          }
+
           setGame(prev => ({ ...prev, inventory: { ...prev.inventory, food: prev.inventory.food - 1 } }));
+          createAutoJournalEntry(pet, 'feed');
         }
         break;
+
       case 'pet':
         setIsPetting(true);
         setTimeout(() => setIsPetting(false), 2000);
-        updateActivePet(prev => ({ ...prev, happiness: Math.min(100, prev.happiness + 10), exp: prev.exp + 2 }));
+        updateActivePet(prev => ({
+          ...prev,
+          happiness: Math.min(100, prev.happiness + 10),
+          exp: prev.exp + 2,
+          bond: Math.min(100, prev.bond + BOND_GAINS.pet) // +2 bond for petting
+        }));
+        createAutoJournalEntry(pet, 'pet');
         break;
+
       case 'play':
+        // Block if tired
+        if (states.tired?.active) {
+          const msgs = NEGATIVE_STATE_MESSAGES.tired.blocked;
+          setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+          return;
+        }
+        // Block if misbehaving
+        if (states.misbehaving?.active) {
+          const msgs = NEGATIVE_STATE_MESSAGES.misbehaving.blocked;
+          setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+          return;
+        }
+
         if (game.inventory.toys > 0) {
-          updateActivePet(prev => ({ ...prev, happiness: Math.min(100, prev.happiness + 30), energy: Math.max(0, prev.energy - 10), exp: prev.exp + 10 }));
+          const now = Date.now();
+          const lastPlay = states.misbehaving?.lastPlayAt;
+          const isInWindow = lastPlay && (now - lastPlay) < NEGATIVE_STATE_CONFIG.misbehaving.playWindowSeconds * 1000;
+          const recentPlays = isInWindow ? (states.misbehaving?.overplayCount || 0) : 0;
+
+          // Check misbehaving triggers
+          const wouldOverplay = recentPlays >= NEGATIVE_STATE_CONFIG.misbehaving.maxPlaysInWindow;
+          const tooHappy = pet.happiness > NEGATIVE_STATE_CONFIG.misbehaving.happinessThreshold;
+          const willMisbehave = wouldOverplay || tooHappy;
+
+          updateActivePet(prev => {
+            const prevStates = prev.negativeStates || DEFAULT_NEGATIVE_STATES;
+            let newState: PetState = {
+              ...prev,
+              happiness: Math.min(100, prev.happiness + 30),
+              energy: Math.max(0, prev.energy - 15), // Playing games costs more energy
+              exp: prev.exp + 10,
+              bond: Math.min(100, prev.bond + BOND_GAINS.play),
+              negativeStates: {
+                ...prevStates,
+                misbehaving: {
+                  ...prevStates.misbehaving,
+                  overplayCount: isInWindow ? (prevStates.misbehaving?.overplayCount || 0) + 1 : 1,
+                  lastPlayAt: now,
+                  active: willMisbehave ? true : prevStates.misbehaving?.active || false,
+                  startedAt: willMisbehave ? now : prevStates.misbehaving?.startedAt || null,
+                },
+              },
+            };
+            return newState;
+          });
+
+          if (willMisbehave) {
+            const msgs = NEGATIVE_STATE_MESSAGES.misbehaving.trigger;
+            setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+          }
+
           setGame(prev => ({ ...prev, inventory: { ...prev.inventory, toys: prev.inventory.toys - 1 } }));
+          createAutoJournalEntry(pet, 'play');
         }
         break;
     }
-  }, [game.inventory, game.activePetId]);
+  }, [game.inventory, game.activePetId, pet, createAutoJournalEntry]);
+
+  // Resolution handlers for negative states
+  const handleClean = useCallback(() => {
+    const states = pet.negativeStates || DEFAULT_NEGATIVE_STATES;
+    if (!states.poop?.active) return;
+
+    updateActivePet(prev => ({
+      ...prev,
+      exp: prev.exp + NEGATIVE_STATE_CONFIG.poop.cleanExpReward,
+      negativeStates: {
+        ...(prev.negativeStates || DEFAULT_NEGATIVE_STATES),
+        poop: { active: false, count: 0, lastTriggeredAt: null },
+      },
+    }));
+
+    const msgs = NEGATIVE_STATE_MESSAGES.poop.clean;
+    setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+  }, [pet]);
+
+  const handleGiveMedicine = useCallback(() => {
+    const states = pet.negativeStates || DEFAULT_NEGATIVE_STATES;
+    if (!states.sick?.active || game.inventory.medicine <= 0) return;
+    if (states.sick?.medicineGivenAt) return; // Already given medicine
+
+    updateActivePet(prev => ({
+      ...prev,
+      exp: prev.exp + NEGATIVE_STATE_CONFIG.sick.medicineExpReward,
+      negativeStates: {
+        ...(prev.negativeStates || DEFAULT_NEGATIVE_STATES),
+        sick: {
+          ...(prev.negativeStates?.sick || {}),
+          active: true,
+          medicineGivenAt: Date.now(),
+        },
+      },
+    }));
+
+    setGame(prev => ({
+      ...prev,
+      inventory: { ...prev.inventory, medicine: prev.inventory.medicine - 1 },
+    }));
+
+    const msgs = NEGATIVE_STATE_MESSAGES.sick.medicine;
+    setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+  }, [pet, game.inventory.medicine]);
+
+  const handleScold = useCallback(() => {
+    const states = pet.negativeStates || DEFAULT_NEGATIVE_STATES;
+    if (!states.misbehaving?.active) return;
+
+    updateActivePet(prev => ({
+      ...prev,
+      happiness: Math.max(0, prev.happiness - NEGATIVE_STATE_CONFIG.misbehaving.scoldHappinessCost),
+      exp: prev.exp + NEGATIVE_STATE_CONFIG.misbehaving.scoldExpReward,
+      bond: Math.min(100, prev.bond + NEGATIVE_STATE_CONFIG.misbehaving.scoldBondGain),
+      negativeStates: {
+        ...(prev.negativeStates || DEFAULT_NEGATIVE_STATES),
+        misbehaving: { active: false, startedAt: null, overplayCount: 0, lastPlayAt: null },
+      },
+    }));
+
+    const msgs = NEGATIVE_STATE_MESSAGES.misbehaving.scold;
+    setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+  }, [pet]);
+
+  const handleRest = useCallback(() => {
+    const states = pet.negativeStates || DEFAULT_NEGATIVE_STATES;
+    if (!states.tired?.active) return;
+
+    updateActivePet(prev => ({
+      ...prev,
+      energy: Math.min(100, prev.energy + NEGATIVE_STATE_CONFIG.tired.restEnergyBoost),
+      exp: prev.exp + NEGATIVE_STATE_CONFIG.tired.restExpReward,
+    }));
+
+    const msgs = NEGATIVE_STATE_MESSAGES.tired.resting;
+    setPetMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+  }, [pet]);
 
   const addMemory = () => {
     if (!newMemory.trim()) return;
-    setGame(prev => ({
-      ...prev,
-      memories: [newMemory, ...prev.memories]
-    }));
+    // Legacy memory support - convert string to MemoryEntry
+    const newEntry: MemoryEntry = {
+      id: Date.now().toString(),
+      title: newMemory.trim().substring(0, 50),
+      content: newMemory.trim(),
+      timestamp: Date.now(),
+      memoryNumber: game.totalMemoryCount + 1,
+    };
+    handleSaveMemory(newEntry);
     setNewMemory("");
   };
+
+  // Terrarium memory handlers
+  const handleSaveMemory = (memoryData: Omit<MemoryEntry, 'id' | 'memoryNumber'>) => {
+    const newMemoryCount = game.totalMemoryCount + 1;
+
+    const newEntry: MemoryEntry = {
+      ...memoryData,
+      id: Date.now().toString(),
+      memoryNumber: newMemoryCount,
+    };
+
+    // Find items to unlock at this memory count
+    const newUnlocks = TERRARIUM_ITEMS.filter(
+      (item) =>
+        item.unlockedAt === newMemoryCount &&
+        !game.terrarium.unlockedItems.includes(item.id)
+    );
+
+    setGame((prev) => ({
+      ...prev,
+      memories: [newEntry, ...prev.memories],
+      totalMemoryCount: newMemoryCount,
+      terrarium: {
+        ...prev.terrarium,
+        unlockedItems: [
+          ...prev.terrarium.unlockedItems,
+          ...newUnlocks.map((item) => item.id),
+        ],
+      },
+    }));
+
+    // Show unlock modal if there are new items
+    if (newUnlocks.length > 0) {
+      setPendingUnlocks(newUnlocks);
+      setActiveModal(null); // Close memory form first
+      // Small delay to let the form close before showing unlock
+      setTimeout(() => {
+        setPetMsg(`Wow! Memory #${newMemoryCount}! I got something new! 🎁`);
+      }, 100);
+    } else {
+      setActiveModal(null);
+      setPetMsg(`Memory #${newMemoryCount} saved! 💕`);
+    }
+  };
+
+  const handlePlaceItems = (placedItems: PlacedItem[]) => {
+    setGame((prev) => ({
+      ...prev,
+      terrarium: {
+        ...prev.terrarium,
+        placedItems,
+      },
+    }));
+  };
+
+  const handleUnlockModalClose = () => {
+    setPendingUnlocks([]);
+  };
+
+  const handleOpenTerrariumFromUnlock = () => {
+    setPendingUnlocks([]);
+    setActiveModal('terrarium');
+  };
+
+  // Check for unclaimed gifts when bond changes
+  const checkForNewGifts = useCallback((petState: PetState) => {
+    const bondLevel = getBondLevel(petState.bond);
+    const availableGifts = BOND_GIFTS.filter(
+      g => g.bondLevel <= bondLevel.level &&
+           !game.claimedGifts.some(cg => cg.giftId === g.id && cg.petId === petState.id)
+    );
+
+    if (availableGifts.length > 0 && !pendingGift) {
+      // Show the first unclaimed gift
+      setPendingGift({ gift: availableGifts[0], pet: petState });
+    }
+  }, [game.claimedGifts, pendingGift]);
+
+  // Claim a gift
+  const claimGift = useCallback((gift: BondGift, petId: string) => {
+    // Add to claimed gifts
+    const newClaim: ClaimedGift = {
+      giftId: gift.id,
+      petId,
+      claimedAt: Date.now(),
+    };
+
+    // Apply reward
+    setGame(prev => {
+      let newState = {
+        ...prev,
+        claimedGifts: [...prev.claimedGifts, newClaim],
+      };
+
+      if (gift.reward) {
+        switch (gift.reward.type) {
+          case 'credits':
+            newState.credits += gift.reward.amount;
+            break;
+          case 'food':
+            newState.inventory = { ...newState.inventory, food: newState.inventory.food + gift.reward.amount };
+            break;
+          case 'toys':
+            newState.inventory = { ...newState.inventory, toys: newState.inventory.toys + gift.reward.amount };
+            break;
+          case 'exp':
+            newState.pets = newState.pets.map(p =>
+              p.id === petId ? { ...p, exp: p.exp + gift.reward!.amount } : p
+            );
+            break;
+        }
+      }
+
+      return newState;
+    });
+
+    setPendingGift(null);
+
+    // Check for more gifts
+    const pet = game.pets.find(p => p.id === petId);
+    if (pet) {
+      setTimeout(() => checkForNewGifts(pet), 500);
+    }
+  }, [game.pets, checkForNewGifts]);
+
+  // Check for gifts when active pet's bond changes
+  useEffect(() => {
+    if (pet && pet.bond > 0) {
+      checkForNewGifts(pet);
+    }
+  }, [pet?.bond, pet?.id, checkForNewGifts]);
+
+  // Check if gallery is unlocked
+  const isGalleryUnlocked = game.totalMemoryCount >= FEATURE_UNLOCKS.gallery;
 
   const buyItem = (item: ShopItem) => {
     if (game.credits >= item.cost) {
@@ -230,6 +817,7 @@ const App: React.FC = () => {
           food: item.type === 'food' ? prev.inventory.food + 1 : prev.inventory.food,
           treats: item.type === 'treat' ? prev.inventory.treats + 1 : prev.inventory.treats,
           toys: item.type === 'toy' ? prev.inventory.toys + 1 : prev.inventory.toys,
+          medicine: item.type === 'medicine' ? prev.inventory.medicine + 1 : prev.inventory.medicine,
         }
       }));
       if (item.type === 'exp') updateActivePet(prev => ({ ...prev, exp: prev.exp + item.value }));
@@ -463,6 +1051,7 @@ const App: React.FC = () => {
             isPetting={isPetting}
             isEating={isEating}
             customImageUrl={pet.customImageUrl}
+            negativeStates={pet.negativeStates}
           />
           
           <div className="mt-12 text-center">
@@ -481,6 +1070,30 @@ const App: React.FC = () => {
           <StatusBar label="Happy" value={pet.happiness} color="bg-pink-400" icon="🍭" />
           <div className="col-span-2">
              <StatusBar label="EXP" value={(pet.exp / pet.maxExp) * 100} color="bg-indigo-500" icon="⭐" />
+          </div>
+          {/* Bond Meter */}
+          <div className="col-span-2 mt-2">
+            {(() => {
+              const bondValue = pet.bond ?? 0;
+              const bondLevelInfo = getBondLevel(bondValue);
+              return (
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">{bondLevelInfo.emoji}</span>
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs font-bold text-pink-600">{bondLevelInfo.name}</span>
+                      <span className="text-[10px] text-gray-400">Lv.{bondLevelInfo.level} • {bondValue}/100</span>
+                    </div>
+                    <div className="h-2 bg-pink-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-pink-400 to-red-400 rounded-full transition-all duration-500"
+                        style={{ width: `${bondValue}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -505,12 +1118,62 @@ const App: React.FC = () => {
             </button>
             <button
               onClick={() => handleAction('play')}
-              disabled={game.inventory.toys === 0}
-              className={`snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 rounded-2xl transition-all ${game.inventory.toys > 0 ? 'text-indigo-500 hover:bg-indigo-50' : 'text-gray-300 opacity-50'}`}
+              disabled={game.inventory.toys === 0 || pet.negativeStates?.tired?.active || pet.negativeStates?.misbehaving?.active}
+              className={`snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 rounded-2xl transition-all ${
+                game.inventory.toys > 0 && !pet.negativeStates?.tired?.active && !pet.negativeStates?.misbehaving?.active
+                  ? 'text-indigo-500 hover:bg-indigo-50'
+                  : 'text-gray-300 opacity-50'
+              }`}
             >
               <span className="text-xl">🎯</span>
               <span className="text-[9px] font-bold uppercase">{game.inventory.toys}</span>
             </button>
+
+            {/* Negative State Action Buttons - Only show when relevant */}
+            {pet.negativeStates?.poop?.active && (
+              <button
+                onClick={handleClean}
+                className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-amber-500 hover:bg-amber-50 rounded-2xl transition-all animate-pulse"
+              >
+                <span className="text-xl">🧹</span>
+                <span className="text-[9px] font-bold uppercase">Clean</span>
+              </button>
+            )}
+
+            {pet.negativeStates?.sick?.active && !pet.negativeStates?.sick?.medicineGivenAt && (
+              <button
+                onClick={handleGiveMedicine}
+                disabled={game.inventory.medicine === 0}
+                className={`snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 rounded-2xl transition-all ${
+                  game.inventory.medicine > 0
+                    ? 'text-red-500 hover:bg-red-50 animate-pulse'
+                    : 'text-gray-300 opacity-50'
+                }`}
+              >
+                <span className="text-xl">💊</span>
+                <span className="text-[9px] font-bold uppercase">{game.inventory.medicine}</span>
+              </button>
+            )}
+
+            {pet.negativeStates?.misbehaving?.active && (
+              <button
+                onClick={handleScold}
+                className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-purple-500 hover:bg-purple-50 rounded-2xl transition-all animate-pulse"
+              >
+                <span className="text-xl">😤</span>
+                <span className="text-[9px] font-bold uppercase">Scold</span>
+              </button>
+            )}
+
+            {pet.negativeStates?.tired?.active && (
+              <button
+                onClick={handleRest}
+                className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-blue-500 hover:bg-blue-50 rounded-2xl transition-all"
+              >
+                <span className="text-xl">😴</span>
+                <span className="text-[9px] font-bold uppercase">Rest</span>
+              </button>
+            )}
 
             {/* Divider */}
             <div className="shrink-0 w-px bg-gray-200 my-1"></div>
@@ -531,6 +1194,20 @@ const App: React.FC = () => {
                 <span className="absolute -top-1 -right-1 bg-yellow-400 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full">{game.trophies.length}</span>
               )}
             </button>
+            <button onClick={() => setActiveModal('collectibles')} className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-2xl transition-all relative">
+              <span className="text-xl">🎁</span>
+              <span className="text-[9px] font-bold uppercase">Gifts</span>
+              {game.claimedGifts.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-purple-400 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full">{game.claimedGifts.length}</span>
+              )}
+            </button>
+            <button onClick={() => setActiveModal('terrarium')} className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-2xl transition-all relative">
+              <span className="text-xl">🌸</span>
+              <span className="text-[9px] font-bold uppercase">Garden</span>
+              {game.totalMemoryCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-green-400 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full">{game.terrarium.unlockedItems.length}</span>
+              )}
+            </button>
             <button onClick={() => setActiveModal('journal')} className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-2xl transition-all">
               <span className="text-xl">📖</span>
               <span className="text-[9px] font-bold uppercase">Journal</span>
@@ -539,6 +1216,15 @@ const App: React.FC = () => {
               <span className="text-xl">👨‍👩‍👧‍👦</span>
               <span className="text-[9px] font-bold uppercase">Kids</span>
             </button>
+            {isGalleryUnlocked && (
+              <button onClick={() => setActiveModal('gallery')} className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-gray-400 hover:text-pink-600 hover:bg-pink-50 rounded-2xl transition-all relative">
+                <span className="text-xl">📷</span>
+                <span className="text-[9px] font-bold uppercase">Gallery</span>
+                {game.memories.filter(m => m.photoUrl).length > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-pink-400 text-white text-[8px] font-black w-4 h-4 flex items-center justify-center rounded-full">{game.memories.filter(m => m.photoUrl).length}</span>
+                )}
+              </button>
+            )}
             <button onClick={() => setActiveModal('settings')} className="snap-center shrink-0 px-4 py-2 flex flex-col items-center gap-0.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-2xl transition-all">
               <span className="text-xl">⚙️</span>
               <span className="text-[9px] font-bold uppercase">Settings</span>
@@ -549,20 +1235,75 @@ const App: React.FC = () => {
 
       {/* KIDS SELECTION MODAL */}
       <Modal isOpen={activeModal === 'kids'} onClose={() => setActiveModal(null)} title="Our Kids">
-        <div className="grid grid-cols-2 gap-4">
-          {game.pets.map(p => (
-            <button 
-              key={p.id}
-              onClick={() => { setGame(prev => ({ ...prev, activePetId: p.id })); setActiveModal(null); }}
-              className={`flex flex-col items-center p-4 rounded-3xl border-2 transition-all ${game.activePetId === p.id ? 'border-blue-500 bg-blue-50 shadow-md' : 'border-gray-100 hover:bg-gray-50'}`}
-            >
-              <div className="w-16 h-16 rounded-full overflow-hidden bg-white border border-gray-100 mb-2 flex items-center justify-center">
-                <span className="text-2xl">{PET_EMOJIS[p.type] || '👶'}</span>
-              </div>
-              <span className="font-bold text-gray-800">{p.name}</span>
-              <span className="text-[10px] text-gray-400 font-bold uppercase">Lvl {p.level}</span>
-            </button>
-          ))}
+        <div className="space-y-3">
+          {game.pets.map(p => {
+            const bondValue = p.bond ?? 0;
+            const bondLevel = getBondLevel(bondValue);
+            const nextThreshold = getNextBondThreshold(bondValue);
+            const pendingGifts = BOND_GIFTS.filter(
+              g => g.bondLevel <= bondLevel.level && !game.claimedGifts.some(cg => cg.giftId === g.id && cg.petId === p.id)
+            );
+
+            return (
+              <button
+                key={p.id}
+                onClick={() => { setGame(prev => ({ ...prev, activePetId: p.id })); setActiveModal(null); }}
+                className={`w-full flex items-center gap-4 p-4 rounded-3xl border-2 transition-all text-left ${game.activePetId === p.id ? 'border-blue-500 bg-blue-50 shadow-md' : 'border-gray-100 hover:bg-gray-50'}`}
+              >
+                {/* Avatar */}
+                <div className="relative">
+                  <div className="w-16 h-16 rounded-full overflow-hidden bg-white border-2 border-gray-100 flex items-center justify-center">
+                    <span className="text-3xl">{PET_EMOJIS[p.type] || '👶'}</span>
+                  </div>
+                  {pendingGifts.length > 0 && (
+                    <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-[10px] font-bold animate-pulse">
+                      🎁
+                    </div>
+                  )}
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-800">{p.name}</span>
+                    <span className="text-[10px] text-gray-400 font-bold uppercase bg-gray-100 px-2 py-0.5 rounded-full">Lvl {p.level}</span>
+                  </div>
+
+                  {/* EXP Bar */}
+                  <div className="mt-2">
+                    <div className="h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full transition-all"
+                        style={{ width: `${(p.exp / p.maxExp) * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-0.5">{p.exp}/{p.maxExp} EXP</p>
+                  </div>
+
+                  {/* Bond Level Badge */}
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-pink-100 to-purple-100 text-pink-700 border border-pink-200">
+                      <span>{bondLevel?.emoji || '👶'}</span>
+                      <span>{bondLevel?.name || 'Kid'}</span>
+                    </div>
+                    <span className="text-[10px] text-gray-400">Bond: {bondValue}</span>
+                  </div>
+                </div>
+
+                {/* Active indicator */}
+                {game.activePetId === p.id && (
+                  <div className="text-blue-500 text-xs font-bold">ACTIVE</div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Gift hint */}
+        <div className="mt-4 p-3 bg-pink-50 rounded-2xl border border-pink-100 text-center">
+          <p className="text-xs text-pink-600">
+            💕 Spend time with your kids to increase your bond! Higher bond = more gifts!
+          </p>
         </div>
       </Modal>
 
@@ -576,7 +1317,7 @@ const App: React.FC = () => {
           {SHOP_ITEMS.map(item => (
             <div key={item.id} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-[2rem] shadow-sm">
               <div className="flex items-center gap-3">
-                <div className="text-4xl">{item.type === 'food' ? '🍗' : item.type === 'treat' ? '🍰' : item.type === 'toy' ? '🧸' : '🧪'}</div>
+                <div className="text-4xl">{item.type === 'food' ? '🍗' : item.type === 'treat' ? '🍰' : item.type === 'toy' ? '🧸' : item.type === 'medicine' ? '💊' : '🧪'}</div>
                 <div>
                   <h3 className="font-bold text-gray-800">{item.name}</h3>
                   <p className="text-xs text-gray-500">{item.description}</p>
@@ -673,21 +1414,50 @@ const App: React.FC = () => {
         ) : (
           <div className="space-y-6">
             <div className="space-y-3">
-              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-2">Add a new life detail</label>
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-2">Quick memory note</label>
               <textarea value={newMemory} onChange={(e) => setNewMemory(e.target.value)} placeholder="E.g. We both love eating tacos on rainy Sundays..."
-                className="w-full p-6 rounded-[2rem] border border-blue-100 focus:ring-4 focus:ring-blue-100 outline-none min-h-[140px] text-gray-700 shadow-inner bg-gray-50 font-medium" />
+                className="w-full p-6 rounded-[2rem] border border-blue-100 focus:ring-4 focus:ring-blue-100 outline-none min-h-[100px] text-gray-700 shadow-inner bg-gray-50 font-medium" />
               <button onClick={addMemory} className="w-full bg-blue-600 text-white py-4 rounded-[2rem] font-black uppercase tracking-widest shadow-xl shadow-blue-100 active:scale-95 transition-transform">
-                Save Memory ❤️
+                Save Quick Note ✨
               </button>
             </div>
-            <div className="space-y-3 mt-8">
-              <h4 className="font-black text-gray-400 text-[10px] uppercase tracking-widest pl-2">Timeline of Us</h4>
+
+            {/* Memory Garden Promo */}
+            <div className="bg-gradient-to-r from-stone-50 to-green-50 p-4 rounded-3xl border border-stone-200">
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">🌸</span>
+                <div className="flex-1">
+                  <h4 className="font-bold text-stone-700">Memory Garden</h4>
+                  <p className="text-xs text-stone-500">Add memories to grow your Japanese garden! {game.totalMemoryCount} memories, {game.terrarium.unlockedItems.length} items unlocked.</p>
+                </div>
+                <button
+                  onClick={() => setActiveModal('terrarium')}
+                  className="px-4 py-2 bg-stone-600 text-white rounded-2xl text-sm font-bold hover:bg-stone-700 transition-colors"
+                >
+                  Open
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3 mt-4">
+              <h4 className="font-black text-gray-400 text-[10px] uppercase tracking-widest pl-2">Timeline of Us ({game.memories.length} memories)</h4>
               <div className="space-y-3 max-h-48 overflow-y-auto pr-2">
-                {game.memories.map((mem, i) => (
-                  <div key={i} className="bg-white p-4 rounded-3xl text-sm text-gray-700 border border-blue-50 shadow-sm font-bold leading-relaxed">
-                    ✨ {mem}
-                  </div>
-                ))}
+                {game.memories.length === 0 ? (
+                  <p className="text-center text-gray-400 py-4 text-sm">No memories yet. Start capturing moments!</p>
+                ) : (
+                  game.memories.map((mem) => (
+                    <div key={mem.id} className="bg-white p-4 rounded-3xl text-sm text-gray-700 border border-blue-50 shadow-sm leading-relaxed flex gap-3">
+                      {mem.photoUrl && (
+                        <img src={mem.photoUrl} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-gray-800 truncate">{mem.title}</p>
+                        {mem.content && <p className="text-xs text-gray-500 line-clamp-2">{mem.content}</p>}
+                        <p className="text-[10px] text-gray-300 mt-1">Memory #{mem.memoryNumber}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -722,10 +1492,57 @@ const App: React.FC = () => {
             <p className="text-xs text-blue-400 font-bold mb-4">Go back to the home screen. Progress is auto-saved.</p>
             <button onClick={() => { setActiveModal(null); setShowHomeScreen(true); }} className="w-full bg-blue-500 text-white py-3 rounded-2xl font-black uppercase text-xs shadow-lg shadow-blue-100 active:scale-95 transition-transform">Back to Home</button>
           </div>
+          {/* Debug Info */}
+          <div className="bg-yellow-50 p-6 rounded-[2rem] border border-yellow-100">
+            <h4 className="font-black text-yellow-600 text-[10px] uppercase mb-2">Debug Info</h4>
+            <div className="text-xs text-yellow-700 space-y-1 font-mono">
+              {game.pets.map(p => (
+                <p key={p.id}>{p.name}: bond={String(p.bond)} (type: {typeof p.bond})</p>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                console.log('Current game state:', game);
+                console.log('Pets:', game.pets);
+                alert('Check browser console for full debug info');
+              }}
+              className="w-full mt-3 bg-yellow-500 text-white py-2 rounded-xl font-bold text-xs active:scale-95 transition-transform"
+            >
+              Log to Console
+            </button>
+          </div>
+
           <div className="bg-red-50 p-6 rounded-[2rem] border border-red-100">
             <h4 className="font-black text-red-600 text-[10px] uppercase mb-2">Reset Game</h4>
             <p className="text-xs text-red-400 font-bold mb-4">This will clear all progress and memories for this save slot.</p>
-            <button onClick={() => { if (activeSlot) saveState.deleteSlot(activeSlot); setGame(INITIAL_GAME_STATE); setActiveModal(null); }} className="w-full bg-red-500 text-white py-3 rounded-2xl font-black uppercase text-xs shadow-lg shadow-red-100 active:scale-95 transition-transform">Reset Progress</button>
+            <button
+              onClick={() => {
+                if (window.confirm('Are you sure you want to reset all progress? This cannot be undone!')) {
+                  if (activeSlot) saveState.deleteSlot(activeSlot);
+                  setGame(INITIAL_GAME_STATE);
+                  setActiveModal(null);
+                }
+              }}
+              className="w-full bg-red-500 text-white py-3 rounded-2xl font-black uppercase text-xs shadow-lg shadow-red-100 active:scale-95 transition-transform"
+            >
+              Reset Progress
+            </button>
+          </div>
+
+          <div className="bg-gray-800 p-6 rounded-[2rem] border border-gray-700">
+            <h4 className="font-black text-gray-300 text-[10px] uppercase mb-2">Nuclear Option</h4>
+            <p className="text-xs text-gray-400 font-bold mb-4">Clear ALL localStorage data (all save slots).</p>
+            <button
+              onClick={() => {
+                if (window.confirm('This will delete ALL save data across ALL slots. Are you absolutely sure?')) {
+                  localStorage.clear();
+                  window.location.reload();
+                }
+              }}
+              className="w-full bg-gray-600 text-white py-3 rounded-2xl font-black uppercase text-xs active:scale-95 transition-transform"
+            >
+              Clear All Data & Reload
+            </button>
           </div>
         </div>
       </Modal>
@@ -782,10 +1599,24 @@ const App: React.FC = () => {
             <span className="text-2xl">→</span>
           </button>
 
+          <button
+            onClick={() => setActiveModal('game_room')}
+            className="w-full flex items-center gap-4 p-5 bg-white border-2 border-pink-100 rounded-3xl hover:bg-pink-50 transition-all active:scale-95"
+          >
+            <span className="text-4xl">🎮</span>
+            <div className="flex-1 text-left">
+              <h3 className="font-bold text-gray-800">Game Room</h3>
+              <p className="text-xs text-gray-500">Play Pong & Match-3 with your kids!</p>
+            </div>
+            <span className="text-2xl">→</span>
+          </button>
+
           <div className="mt-6 p-4 bg-gray-50 rounded-2xl border border-gray-100">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Stats</p>
             <p className="text-sm text-gray-600">Best Memory Reward: <span className="font-bold">{game.highScores.memoryMatch} 💎</span></p>
             <p className="text-sm text-gray-600">Trivia Answered: <span className="font-bold">{game.answeredTrivia.length}/{TRIVIA_QUESTIONS.length}</span></p>
+            <p className="text-sm text-gray-600">Best Pong Score: <span className="font-bold">{game.highScores.pong} 💎</span></p>
+            <p className="text-sm text-gray-600">Best Match-3 Score: <span className="font-bold">{game.highScores.match3} 💎</span></p>
           </div>
         </div>
       </Modal>
@@ -1052,6 +1883,148 @@ const App: React.FC = () => {
         </div>
       </Modal>
 
+      {/* GAME ROOM MODAL */}
+      <Modal isOpen={activeModal === 'game_room'} onClose={() => setActiveModal(null)} title="Game Room">
+        <GameRoom
+          pets={game.pets}
+          credits={game.credits}
+          onClose={() => setActiveModal('games')}
+          onCreditChange={(amount) => setGame(prev => ({ ...prev, credits: prev.credits + amount }))}
+          onBondIncrease={handleBondIncrease}
+          onGameWin={(petId, gameName, reward) => {
+            const winningPet = game.pets.find(p => p.id === petId);
+            if (winningPet) {
+              createAutoJournalEntry(winningPet, 'game_win', `Won ${gameName} with ${winningPet.name}! Earned ${reward} 💎`);
+            }
+          }}
+        />
+      </Modal>
+
+      {/* TERRARIUM VIEW */}
+      {activeModal === 'terrarium' && (
+        <Terrarium
+          unlockedItems={game.terrarium.unlockedItems}
+          placedItems={game.terrarium.placedItems}
+          onPlaceItem={handlePlaceItems}
+          onClose={() => setActiveModal(null)}
+          onAddMemory={() => setActiveModal('memory_form')}
+          totalMemories={game.totalMemoryCount}
+        />
+      )}
+
+      {/* MEMORY FORM */}
+      {activeModal === 'memory_form' && (
+        <MemoryForm
+          onSave={handleSaveMemory}
+          onClose={() => setActiveModal('terrarium')}
+          memoryCount={game.totalMemoryCount}
+        />
+      )}
+
+      {/* UNLOCK MODAL */}
+      {pendingUnlocks.length > 0 && (
+        <UnlockModal
+          items={pendingUnlocks}
+          onClose={handleUnlockModalClose}
+          onOpenTerrarium={handleOpenTerrariumFromUnlock}
+        />
+      )}
+
+      {/* GALLERY VIEW */}
+      {activeModal === 'gallery' && (
+        <Gallery
+          memories={game.memories}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
+      {/* COLLECTIBLES VIEW */}
+      {activeModal === 'collectibles' && (
+        <Collectibles
+          claimedGifts={game.claimedGifts}
+          pets={game.pets}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
+      {/* BOND GIFT MODAL */}
+      {pendingGift && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[2rem] max-w-sm w-full shadow-2xl animate-bounce-in overflow-hidden">
+            {/* Art Asset Display - Full Width */}
+            <div className="relative bg-gradient-to-br from-pink-100 via-purple-100 to-blue-100 p-4">
+              <div className="aspect-square max-h-64 mx-auto rounded-2xl overflow-hidden bg-white shadow-lg border-4 border-white">
+                <img
+                  src={`/assets/gifts/${pendingGift.pet.id}/${pendingGift.gift.assets[pendingGift.pet.id] || pendingGift.gift.defaultAsset}`}
+                  alt={pendingGift.gift.name}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    // Fallback to emoji if image not found
+                    const target = e.target as HTMLImageElement;
+                    target.style.display = 'none';
+                    target.parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-8xl bg-gradient-to-br from-pink-50 to-purple-50">${
+                      pendingGift.gift.bondLevel <= 3 ? '🎨' :
+                      pendingGift.gift.bondLevel <= 5 ? '🌸' :
+                      pendingGift.gift.bondLevel <= 7 ? '💝' :
+                      pendingGift.gift.bondLevel <= 9 ? '💌' : '👑'
+                    }</div>`;
+                  }}
+                />
+              </div>
+              {/* Sparkle decorations */}
+              <div className="absolute top-2 left-4 text-2xl animate-pulse">✨</div>
+              <div className="absolute top-8 right-6 text-xl animate-pulse delay-100">💫</div>
+              <div className="absolute bottom-4 left-8 text-lg animate-pulse delay-200">⭐</div>
+            </div>
+
+            {/* Content */}
+            <div className="p-5">
+              {/* Header */}
+              <div className="text-center mb-4">
+                <p className="text-xs text-pink-500 font-bold uppercase tracking-wide">Bond Level {pendingGift.gift.bondLevel} Reached!</p>
+                <h2 className="text-xl font-bold text-gray-800 mt-1">A Gift from {pendingGift.pet.name}!</h2>
+                <p className="text-sm text-gray-500">{pendingGift.gift.name}</p>
+              </div>
+
+              {/* Pet Message */}
+              <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-4 mb-4 border border-blue-100">
+                <div className="flex items-center justify-center gap-2 mb-2">
+                  <span className="text-xl">{PET_EMOJIS[pendingGift.pet.type] || '👶'}</span>
+                  <span className="font-bold text-blue-700">{pendingGift.pet.name}:</span>
+                </div>
+                <p className="text-sm text-blue-600 italic text-center leading-relaxed">
+                  "{pendingGift.gift.messages[pendingGift.pet.id] || pendingGift.gift.defaultMessage}"
+                </p>
+              </div>
+
+              {/* Reward */}
+              {pendingGift.gift.reward && (
+                <div className="flex items-center justify-center gap-2 mb-4 py-2 bg-yellow-50 rounded-xl border border-yellow-200">
+                  <span className="text-sm text-yellow-700 font-bold">Reward:</span>
+                  <span className="text-lg font-bold text-yellow-600">
+                    +{pendingGift.gift.reward.amount} {
+                      pendingGift.gift.reward.type === 'credits' ? '💎' :
+                      pendingGift.gift.reward.type === 'food' ? '🍙' :
+                      pendingGift.gift.reward.type === 'toys' ? '🎯' : '⭐'
+                    }
+                  </span>
+                </div>
+              )}
+
+              {/* Claim Button */}
+              <button
+                onClick={() => claimGift(pendingGift.gift, pendingGift.pet.id)}
+                className="w-full py-4 bg-gradient-to-r from-pink-500 to-red-500 text-white font-bold rounded-2xl shadow-lg shadow-pink-200 active:scale-95 transition-transform"
+              >
+                Accept Gift 💕
+              </button>
+
+              <p className="text-center text-[10px] text-gray-400 mt-3">Added to your Collectibles!</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes bounce-slow {
           0%, 100% { transform: translateY(0); }
@@ -1066,6 +2039,14 @@ const App: React.FC = () => {
         }
         .scrollbar-hide::-webkit-scrollbar {
           display: none;
+        }
+        @keyframes bounce-in {
+          0% { transform: scale(0.5); opacity: 0; }
+          50% { transform: scale(1.05); }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-bounce-in {
+          animation: bounce-in 0.4s ease-out forwards;
         }
       `}</style>
     </div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { saveState, SaveSlotInfo } from '../services/saveState';
+import homescreenBackground from '../assets/homescreen.png';
 
 interface HomeScreenProps {
   onNewGame: (slotId: number) => void;
@@ -37,7 +38,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const hasAnySave = slots.some(s => !s.isEmpty);
 
   return (
-    <div className="relative w-full h-screen flex flex-col items-center justify-center bg-gradient-to-b from-pink-100 via-pink-50 to-blue-50">
+    <div
+      className="relative w-full h-screen flex flex-col items-center justify-center"
+      style={{
+        backgroundImage: `url(${homescreenBackground})`,
+        backgroundSize: 'contain',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        backgroundColor: '#fdf2f8',
+      }}
+    >
       {/* Title */}
       <div className="mb-12">
         <h1 className="text-6xl font-brand text-pink-500 drop-shadow-sm" style={{ fontFamily: "'Fredoka One', cursive" }}>

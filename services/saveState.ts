@@ -1,7 +1,8 @@
 import { GameState } from '../types';
+import { INITIAL_GAME_STATE, DEFAULT_NEGATIVE_STATES } from '../constants';
 
 const SAVE_KEY_PREFIX = 'bbgotchi_save_';
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 4; // Bumped for negative states system
 const MAX_SLOTS = 3;
 
 export interface SaveData {
@@ -46,11 +47,53 @@ export const saveState = {
 
       const saveData: SaveData = JSON.parse(data);
 
+      // Migrate old saves by merging with defaults
+      const migratedState: GameState = {
+        ...INITIAL_GAME_STATE,
+        ...saveData.gameState,
+        // Ensure terrarium exists with proper structure
+        terrarium: {
+          unlockedItems: saveData.gameState.terrarium?.unlockedItems ?? [],
+          placedItems: saveData.gameState.terrarium?.placedItems ?? [],
+        },
+        // Ensure memories is an array (migrate from old string[] format if needed)
+        memories: Array.isArray(saveData.gameState.memories)
+          ? saveData.gameState.memories.map((m: any, idx: number) =>
+              typeof m === 'string'
+                ? { id: `legacy-${idx}`, title: m.substring(0, 50), content: m, timestamp: Date.now(), memoryNumber: idx + 1 }
+                : m
+            )
+          : [],
+        totalMemoryCount: saveData.gameState.totalMemoryCount ?? saveData.gameState.memories?.length ?? 0,
+        // Ensure highScores has all fields
+        highScores: {
+          memoryMatch: saveData.gameState.highScores?.memoryMatch ?? 0,
+          pong: saveData.gameState.highScores?.pong ?? 0,
+          match3: saveData.gameState.highScores?.match3 ?? 0,
+        },
+        // Ensure inventory has medicine
+        inventory: {
+          ...INITIAL_GAME_STATE.inventory,
+          ...saveData.gameState.inventory,
+          medicine: saveData.gameState.inventory?.medicine ?? 2,
+        },
+        // Ensure pets have bond property and negativeStates
+        pets: saveData.gameState.pets.map(p => ({
+          ...p,
+          bond: p.bond ?? 0,
+          negativeStates: p.negativeStates ?? { ...DEFAULT_NEGATIVE_STATES },
+        })),
+        // Ensure claimedGifts exists
+        claimedGifts: saveData.gameState.claimedGifts ?? [],
+      };
+
       if (saveData.version !== SAVE_VERSION) {
-        console.warn('Save version mismatch, may need migration');
+        console.log('Migrated save from version', saveData.version, 'to', SAVE_VERSION);
+        // Auto-save the migrated version
+        this.save(migratedState, slotId);
       }
 
-      return saveData.gameState;
+      return migratedState;
     } catch (error) {
       console.error('Failed to load game state:', error);
       return null;

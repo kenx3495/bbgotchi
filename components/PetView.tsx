@@ -1,5 +1,5 @@
 import React from 'react';
-import { PetType, PetStage } from '../types';
+import { PetType, PetStage, NegativeStates } from '../types';
 import { PET_EMOJIS } from '../constants';
 
 // Import BABY stage avatars
@@ -66,6 +66,7 @@ interface PetViewProps {
   isPetting: boolean;
   isEating: boolean;
   customImageUrl?: string;
+  negativeStates?: NegativeStates;
 }
 
 export const PetView: React.FC<PetViewProps> = ({
@@ -73,7 +74,8 @@ export const PetView: React.FC<PetViewProps> = ({
   stage,
   isPetting,
   isEating,
-  customImageUrl
+  customImageUrl,
+  negativeStates,
 }) => {
   // No size scaling - all stages same size
   const getSize = () => 'scale-100';
@@ -131,6 +133,40 @@ export const PetView: React.FC<PetViewProps> = ({
       {isEating && (
         <div className="absolute -right-16 top-1/2 -translate-y-1/2 text-5xl animate-bounce z-20">
           🍕
+        </div>
+      )}
+
+      {/* Negative State Indicators */}
+      {negativeStates?.poop?.active && (
+        <div className="absolute -right-8 bottom-4 text-4xl animate-bounce z-20">
+          💩
+          {(negativeStates.poop.count || 1) > 1 && (
+            <span className="absolute -top-2 -right-2 text-xs bg-amber-500 text-white rounded-full w-5 h-5 flex items-center justify-center font-bold">
+              {negativeStates.poop.count}
+            </span>
+          )}
+        </div>
+      )}
+
+      {negativeStates?.sick?.active && (
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 text-4xl z-20">
+          {negativeStates.sick.medicineGivenAt ? (
+            <span className="animate-pulse">💊✨</span>
+          ) : (
+            <span className="animate-pulse">🤒</span>
+          )}
+        </div>
+      )}
+
+      {negativeStates?.misbehaving?.active && (
+        <div className="absolute -left-8 top-8 text-4xl animate-spin z-20" style={{ animationDuration: '3s' }}>
+          😈
+        </div>
+      )}
+
+      {negativeStates?.tired?.active && (
+        <div className="absolute top-4 right-0 text-4xl animate-pulse z-20">
+          💤
         </div>
       )}
 
